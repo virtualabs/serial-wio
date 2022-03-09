@@ -1,7 +1,7 @@
 #include "SAMDTimerInterrupt.h"
 #include"TFT_eSPI.h"
 
-#define MAX_MEASURES    25600
+#define MAX_MEASURES    5000
 #define IDLE_INTERVAL   100000
 //#define PROBE_INPUT     D3
 #define PROBE_INPUT     PIN_SERIAL1_RX
@@ -141,7 +141,7 @@ int count_printable_chars(char *p_data, int data_size)
   return count;
 }
 
-int try_decode(int nbits, int bit_duration, int parity, char *p_data, int *p_data_size)
+int try_decode(int period, int nbits, int bit_duration, int parity, char *p_data, int *p_data_size)
 {
   int i,j,bitpos,m,ones,errors;
   uint8_t state=1;
@@ -253,7 +253,18 @@ int try_decode(int nbits, int bit_duration, int parity, char *p_data, int *p_dat
 
               /* Save decoded byte. */
               if (nbytes < *p_data_size)
+              {
                 p_data[nbytes++] = b;
+              }
+              else
+              {
+                /* Return the number of bytes written. */
+                *p_data_size = nbytes;
+              
+              
+                /* Return number of errors. */
+                return errors;
+              }
               
             }
           }
@@ -274,7 +285,7 @@ int try_decode(int nbits, int bit_duration, int parity, char *p_data, int *p_dat
       i++;
     }
     
-    t_off += 1;
+    t_off += period;
   }
 
   /* Return the number of bytes written. */
@@ -326,7 +337,7 @@ void loop() {
         for (parity=PAR_NONE; parity<PAR_MAX; parity++)
         {
           bufsize = 10;
-          if (try_decode(bytesize, min_inter, parity, rx_data, &bufsize) == 0)
+          if (try_decode(min_inter/4, bytesize, min_inter, parity, rx_data, &bufsize) == 0)
           {
             /* All characters are printable: found it ! */
             printable = count_printable_chars(rx_data, bufsize);
