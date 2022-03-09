@@ -1,12 +1,19 @@
 #include "SAMDTimerInterrupt.h"
+#include"TFT_eSPI.h"
 
 #define MAX_MEASURES    25600
 #define IDLE_INTERVAL   100000
+//#define PROBE_INPUT     D3
+#define PROBE_INPUT     PIN_SERIAL1_RX
+#define SCREEN_WIDTH    50
+#define SCREEN_HEIGHT   24
+#define LINE_HEIGHT     10
 
 typedef enum {
   WAITING,
   ACQUIRE,
-  ANALYZE
+  ANALYZE,
+  MONITOR
 } mp_state_t;
 
 enum {
@@ -16,6 +23,11 @@ enum {
   PAR_MAX
 };
 
+typedef struct {
+  int period;
+  int baudrate;
+} baudrate_info_t;
+
 static uint32_t g_measures[MAX_MEASURES];
 volatile uint32_t g_usec_counter;
 volatile uint32_t g_last_timestamp;
@@ -23,6 +35,39 @@ volatile int g_nb_measures;
 volatile mp_state_t g_state;
 
 SAMDTimer ITimer0(TIMER_TC3);
+TFT_eSPI tft;
+
+
+char g_uart_log[SCREEN_HEIGHT][SCREEN_WIDTH+1];
+int g_uart_cur_col, g_uart_cur_line, g_uart_top_line;
+
+int period_to_baudrate(int period)
+{
+  int i=0;
+  baudrate_info_t rates[] = {
+    {4, 230400},
+    {8, 115200},
+    {13, 76800},
+    {17, 57600},
+    {26, 38400},
+    {34, 28800},
+    {52, 19200},
+    {104, 9600},
+    {0, 0}
+  };
+
+  while (rates[i].period > 0)
+  {
+    if ( period <= (rates[i].period+1))
+    {
+      return rates[i].baudrate;
+    }
+    i++;
+  }
+
+  /* Not found, return -1. */
+  return -1;
+}
 
 void u_sec_counter(void)
 {
@@ -36,13 +81,42 @@ void u_sec_counter(void)
   }
 }
 
+void resync(void)
+{
+  /* Setup our input GPIO. */
+  Serial1.end();
+  attachInterrupt(digitalPinToInterrupt(PROBE_INPUT), track_state, CHANGE);
+  
+  /* Restart analysis. */
+  g_state = WAITING;
+}
+
 void setup() {
   /* Setup WioTerminal Serial. */
   Serial.begin(115200);
 
+  /* Setup screen. */
+  tft.begin();
+  tft.setRotation(3);
+  tft.fillScreen(TFT_BLACK); //Red background
+  tft.setTextColor(TFT_WHITE);          //sets the text colour to black
+  tft.setTextSize(1);                   //sets the size of text
+  //tft.drawString("WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW", 0, 0);
+  //tft.drawString("WWWWWWWWWWWWWWWWWWWWWWWWW", 0, 10);
+
+  memset(g_uart_log, 0, (SCREEN_WIDTH+1)*SCREEN_HEIGHT);
+  g_uart_cur_line = 0;
+  g_uart_cur_col = 0;
+  g_uart_top_line = 0;
+
+  /* Setup our buttons. */
+  pinMode(WIO_KEY_C, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(WIO_KEY_C), resync, FALLING);
+ 
   /* Setup our input GPIO. */
-  pinMode(D3, INPUT);
-  attachInterrupt(D3, track_state, CHANGE);
+  Serial1.end(); // Disable hardware UART
+  pinMode(PROBE_INPUT, INPUT);
+  attachInterrupt(digitalPinToInterrupt(PROBE_INPUT), track_state, CHANGE);
 
   /* Set default state. */
   mp_state_t g_state = WAITING;
@@ -98,26 +172,6 @@ int try_decode(int nbits, int bit_duration, int parity, char *p_data, int *p_dat
     b_parity_enabled = true;
   }
   
-  /*
-  Serial.println("-----------------------------");
-  Serial.print("measures: ");
-  Serial.println(g_nb_measures);
-  for (i=0; i< g_nb_measures; i++)
-  {
-    Serial.print(i);
-    Serial.print(" - ");
-    Serial.println(g_measures[i]);
-  }
-  Serial.println("-----------------------------");
-  */
-  
-  /*
-  Serial.print("Bit duration: ");
-  Serial.println(t);
-  Serial.print("T0: ");
-  Serial.println(tzero);
-  */
-
   /* No errors encountered yet. */
   errors = 0;
   nbytes = 0;
@@ -138,25 +192,12 @@ int try_decode(int nbits, int bit_duration, int parity, char *p_data, int *p_dat
       state = (~state)&1;
       m++;
       
-      //Serial.print("state changed: ");
-      //Serial.println(state);
-
       /* Falling edge: start bit. */
       if ((decode_state == STOP) && !state)
       {
         //Serial.println("Falling edge, start bit detected.");
         decode_state = START;
       }
-        
-      /*
-      Serial.print("measure index: ");
-      Serial.print(m);
-      Serial.print(" state: ");
-      Serial.print(state);
-      Serial.print(" (");
-      Serial.print(t_off);
-      Serial.println(")");
-      */
     }
     
     /* save bit. */
@@ -166,17 +207,10 @@ int try_decode(int nbits, int bit_duration, int parity, char *p_data, int *p_dat
       {
         case DATA:
           {
-            /*
-            Serial.print("d[");
-            Serial.print(bitpos);
-            Serial.print("]=");
-            Serial.println(state);
-            */
             bits[bitpos++] = state;
 
             if (bitpos >= (nbits + ((b_parity_enabled)?1:0)))
             {
-              //Serial.println("Expected bits collected");
               /* parity not supported yet, goto stop bit. */
               decode_state = STOP;
 
@@ -201,20 +235,14 @@ int try_decode(int nbits, int bit_duration, int parity, char *p_data, int *p_dat
                   case PAR_ODD:
                     {
                       if (bits[nbits] != ((ones%2)==0)?1:0)
-                      {
-                        //Serial.println("Parity error (odd but even number of 1s)");
                         errors++;
-                      }
                     }
                     break;
 
                   case PAR_EVEN:
                     {
                       if (bits[nbits] != (ones%2))
-                      {
                         errors++;
-                        //Serial.println("Parity error");
-                      }
                     }
                     break;
                   
@@ -223,8 +251,7 @@ int try_decode(int nbits, int bit_duration, int parity, char *p_data, int *p_dat
                 }
               }
 
-              /* Display decoded byte. */
-              //Serial.print((char)b);
+              /* Save decoded byte. */
               if (nbytes < *p_data_size)
                 p_data[nbytes++] = b;
               
@@ -235,7 +262,6 @@ int try_decode(int nbits, int bit_duration, int parity, char *p_data, int *p_dat
           
         case START:
           {
-            //Serial.println("Start bit sampled, now collecting d0->dn");
             decode_state = DATA;
             bitpos = 0;
           }
@@ -246,16 +272,9 @@ int try_decode(int nbits, int bit_duration, int parity, char *p_data, int *p_dat
       }
 
       i++;
-      
-      //Serial.print("-- t/2 reached, save bit (");
-      //bits[i++] = state;
-      /*
-      Serial.print(state);
-      Serial.println(")");
-      */
     }
     
-    t_off += 0.1;
+    t_off += 1;
   }
 
   /* Return the number of bytes written. */
@@ -268,123 +287,187 @@ int try_decode(int nbits, int bit_duration, int parity, char *p_data, int *p_dat
 
 
 void loop() {
-  int baudrate = 0;
+  int baudrate = 0, uart_config;
   uint32_t min_inter, delta, i, total, nbits;
   char rx_data[10];
   int bufsize;
   int bytesize, parity, printable, good_par, found;
-  
-  if (g_state == ANALYZE)
+  int nbytes;
+  char rx_buf[SCREEN_WIDTH];
+  char rx_byte;
+
+  switch(g_state)
   {
-    /* Determine bit duration. */
-    min_inter = g_last_timestamp;
-    
-    /* Look for minimum interval (1 bit coded). */
-    for (i=0; i<(g_nb_measures-1); i++)
+    case ANALYZE:
     {
-      delta = g_measures[i+1] - g_measures[i];
-      //Serial.print("delta: ");
-      //Serial.println(delta);
-      if (delta < min_inter)
-        min_inter = delta;
-    }
-
-    /*
-    Serial.print("Bit duration: ");
-    Serial.println(min_inter);
-    */
-
-    /* Bruteforce parameters. */
-    found = 0;
-    for (bytesize=7; bytesize<9; bytesize++)
-    {
-      good_par = PAR_NONE;
-      for (parity=PAR_NONE; parity<PAR_MAX; parity++)
+      /* Determine bit duration. */
+      min_inter = g_last_timestamp;
+      
+      /* Look for minimum interval (1 bit coded). */
+      for (i=0; i<(g_nb_measures-1); i++)
       {
-        bufsize = 10;
-        if (try_decode(bytesize, min_inter, parity, rx_data, &bufsize) == 0)
+        delta = g_measures[i+1] - g_measures[i];
+        //Serial.print("delta: ");
+        //Serial.println(delta);
+        if (delta < min_inter)
+          min_inter = delta;
+      }
+  
+      
+      Serial.print("Bit duration: ");
+      Serial.println(min_inter);
+      
+  
+      /* Bruteforce parameters. */
+      found = 0;
+      for (bytesize=7; bytesize<9; bytesize++)
+      {
+        good_par = PAR_NONE;
+        for (parity=PAR_NONE; parity<PAR_MAX; parity++)
         {
-          /* All characters are printable: found it ! */
-          printable = count_printable_chars(rx_data, bufsize);
-          if (printable == bufsize)
+          bufsize = 10;
+          if (try_decode(bytesize, min_inter, parity, rx_data, &bufsize) == 0)
           {
-            found = 1;
-            
-            /* Keep the best parity setting. */
-            if (parity != PAR_NONE)
-              good_par = parity;
+            /* All characters are printable: found it ! */
+            printable = count_printable_chars(rx_data, bufsize);
+            if (printable == bufsize)
+            {
+              found = 1;
+              
+              /* Keep the best parity setting. */
+              if (parity != PAR_NONE)
+                good_par = parity;
+            }
           }
         }
-      }
-
-      /* Display parameters if found. */
-      if (found)
-      {
-        Serial.print("Bit duration (us): ");
-        Serial.println(min_inter);
-        Serial.print("Byte size: ");
-        Serial.println(bytesize);
-        Serial.print("Parity: ");
-        switch (good_par)
+  
+        /* Display parameters if found. */
+        if (found)
         {
-          case PAR_NONE:
-            Serial.println("none");
-            break;
+          Serial.print("Bit duration (us): ");
+          Serial.println(min_inter);
+          Serial.print("Byte size: ");
+          Serial.println(bytesize);
+          Serial.print("Parity: ");
+          switch (good_par)
+          {
+            case PAR_NONE:
+              Serial.println("none");
+              uart_config = (bytesize - 5)*2;
+              break;
+  
+            case PAR_EVEN:
+              Serial.println("even");
+              uart_config = (bytesize - 5)*2 + 0x20;
+              break;
+  
+            case PAR_ODD:
+              Serial.println("odd");
+              uart_config = (bytesize - 5)*2 + 0x30;
+              break;
+          }
+          baudrate = period_to_baudrate(min_inter);
+          Serial.print("Baudrate: ");
+          Serial.println(baudrate);
+          Serial.print("UART config: ");
+          Serial.println(uart_config, HEX);
+        }
+      }
+  
+      /* UART parameters recovered, configure hardware UART. */
+      if ((found) && (baudrate > 0))
+      {
+        Serial.println("======< MONITOR >=============");
+        /* Switch to display mode. */
+        g_state = MONITOR;
 
-          case PAR_EVEN:
-            Serial.println("even");
-            break;
+        /* Re-enable hardware UART. */
+        detachInterrupt(digitalPinToInterrupt(PROBE_INPUT));
+        Serial1.begin(baudrate, uart_config);
+      }
+      else
+      {
+        Serial.println("> Switch to acquisition mode");
+        /* Back to waiting. */
+        g_state = WAITING;
+      }
+    }
+    break;
 
-          case PAR_ODD:
-            Serial.println("odd");
-            break;
+    case MONITOR:
+    {
+      /* Read data from UART. */
+      nbytes = Serial1.available();
+      if (nbytes > 0)
+      {
+        if (nbytes > SCREEN_WIDTH)
+          nbytes = SCREEN_WIDTH;
+        rx_byte = Serial1.readBytes(rx_buf, nbytes);
+        /* Forward to Serial. */
+        Serial.write(rx_buf, nbytes);
+
+        /* Store data in memory. */
+        for (i=0; i<nbytes; i++)
+        {
+          /* Jump to next line if '\n' received. */
+          if (rx_buf[i] == '\n')
+          {
+            /* Update display. */
+            tft.fillRect(0, g_uart_cur_line*LINE_HEIGHT, 320, LINE_HEIGHT, TFT_BLACK);
+            tft.drawString(g_uart_log[g_uart_cur_line], 0, g_uart_cur_line*LINE_HEIGHT);
+            
+            g_uart_cur_line = (g_uart_cur_line + 1) % SCREEN_HEIGHT;
+            /*
+            g_uart_cur_line++;
+            if (g_uart_cur_line >= SCREEN_HEIGHT)
+            {
+              g_uart_cur_line = 0;
+            }*/
+
+            if (g_uart_cur_line == g_uart_top_line)
+            {
+              g_uart_top_line = (g_uart_top_line + 1) % SCREEN_HEIGHT;
+              memset(&g_uart_log[g_uart_cur_line], 0, SCREEN_WIDTH+1);
+              /*
+              g_uart_top_line++;
+              if (g_uart_top_line >= SCREEN_HEIGHT)
+              {
+                g_uart_top_line = 0;
+              }*/
+            }
+          }
+          else if (rx_buf[i] == '\r')
+          {
+            g_uart_cur_col = 0;
+          }
+          else
+          {
+            if (g_uart_cur_col < SCREEN_WIDTH)
+            {
+              g_uart_log[g_uart_cur_line][g_uart_cur_col++] = rx_buf[i];
+            }
+          }
         }
 
-        /* Done. */
-        break;
+        /* Update display. */
+        tft.fillRect(0, g_uart_cur_line*LINE_HEIGHT, 320, LINE_HEIGHT, TFT_RED);
+        tft.drawString(g_uart_log[g_uart_cur_line], 0, g_uart_cur_line*LINE_HEIGHT);
+        
+        /*
+        for (i=0; i<SCREEN_HEIGHT; i++)
+        {
+          if (i == g_uart_cur_line)
+            tft.fillRect(0, i*LINE_HEIGHT, 320, LINE_HEIGHT, TFT_BLACK);
+          //tft.drawString(g_uart_log[(i+g_uart_top_line)%SCREEN_HEIGHT], 0, i*LINE_HEIGHT); 
+          tft.drawString(g_uart_log[i%SCREEN_HEIGHT], 0, i*LINE_HEIGHT); 
+        }*/
+        
       }
     }
-    
-    
-    #if 0
-    min_inter = g_last_timestamp;
-    
-    /* Look for minimum interval (1 bit coded). */
-    for (i=0; i<(g_nb_measures-1); i++)
-    {
-      delta = g_measures[i+1] - g_measures[i];
-      //Serial.print("delta: ");
-      //Serial.println(delta);
-      if (delta < min_inter)
-        min_inter = delta;
-    }
+    break;
 
-    /* Display min_inter. */
-    Serial.print("min inter: ");
-    Serial.println(min_inter);
-
-    /* Compute acquisition time. */
-    total = 0;
-    for (i=0; i<(g_nb_measures-1); i++)
-    {
-      delta = g_measures[i+1] - g_measures[i];
-      if (delta < 10*min_inter)
-      {
-        total += delta;
-      }
-    }
-
-    Serial.print("total: ");
-    Serial.println(total);
-
-    /* Deduce number of bits. */
-    nbits = total / min_inter;
-    Serial.print("bits: ");
-    Serial.println(nbits);
-    #endif
-
-    /* Back to waiting. */
-    g_state = WAITING;
+    default:
+      break;
   }
 }
 
@@ -395,7 +478,7 @@ void track_state(void)
     case WAITING:
       {
         /* Found a falling edge, start acquisition. */
-        if (digitalRead(D3) == 0)
+        if (digitalRead(PROBE_INPUT) == 0)
         {
           /* Save measure. */
           g_nb_measures = 0;
@@ -419,6 +502,7 @@ void track_state(void)
         }
         else
         {
+          Serial.println("> Switching to analysis");
           /* Switch to analyze mode. */
           g_state = ANALYZE;
         }
