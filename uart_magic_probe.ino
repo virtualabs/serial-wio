@@ -3,11 +3,18 @@
 
 #define MAX_MEASURES    5000
 #define IDLE_INTERVAL   100000
-//#define PROBE_INPUT     D3
 #define PROBE_INPUT     PIN_SERIAL1_RX
 #define SCREEN_WIDTH    50
-#define SCREEN_HEIGHT   24
+#define SCREEN_HEIGHT   22
 #define LINE_HEIGHT     10
+#define LOG_OFFSET_Y    (2*LINE_HEIGHT)
+
+#define BG_COLOR        TFT_BLACK
+#define TEXT_COLOR      TFT_LIGHTGREY
+
+/*********************
+ * Typedefs
+ *********************/
 
 typedef enum {
   WAITING,
@@ -28,19 +35,43 @@ typedef struct {
   int baudrate;
 } baudrate_info_t;
 
+/**********************
+ * Globals
+ **********************/
+
+/* Global state. */
+volatile mp_state_t g_state;
+
+/* Logic analysis. */
 static uint32_t g_measures[MAX_MEASURES];
 volatile uint32_t g_usec_counter;
 volatile uint32_t g_last_timestamp;
 volatile int g_nb_measures;
-volatile mp_state_t g_state;
+volatile int baudrate = 0, uart_config, good_par, g_bytesize;
 
+/* Timer. */
 SAMDTimer ITimer0(TIMER_TC3);
+
+/* Screen. */
 TFT_eSPI tft;
-
-
 char g_uart_log[SCREEN_HEIGHT][SCREEN_WIDTH+1];
 int g_uart_cur_col, g_uart_cur_line, g_uart_top_line;
 
+
+
+/**********************************************
+ **********************************************
+ *
+ * Helpers
+ * 
+ **********************************************
+ **********************************************/
+
+/**
+ * @brief Convert period to standard baudrate
+ * @param period: measured period in microseconds
+ * @return closest standard baudrate
+ */
 int period_to_baudrate(int period)
 {
   int i=0;
@@ -69,6 +100,31 @@ int period_to_baudrate(int period)
   return -1;
 }
 
+
+/**
+ * @brief Count printable characters
+ * @param p_data: pointer to an array of characters
+ * @param data_size: number of characters in the given array
+ * @return number of printable characters
+ */
+
+int count_printable_chars(char *p_data, int data_size)
+{
+  int count=0;
+  for (int i=0; i<data_size; i++)
+  {
+    if (isPrintable(p_data[i]))
+      count++;
+  }
+
+  return count;
+}
+
+
+/**
+ * @brief uSec counter callback (used for logic analysis).
+ **/
+
 void u_sec_counter(void)
 {
   /* Increment our counter. */
@@ -81,16 +137,200 @@ void u_sec_counter(void)
   }
 }
 
-void resync(void)
+
+/**********************************************
+ **********************************************
+ *
+ * Screen management
+ * 
+ **********************************************
+ **********************************************/
+
+/**
+ * @brief Clear UART log screen
+ */
+
+void clear_log_screen(void)
 {
+  /* Clear screen buffer. */
+  memset(g_uart_log, 0, (SCREEN_WIDTH+1)*SCREEN_HEIGHT);
+  g_uart_cur_line = 0;
+  g_uart_cur_col = 0;
+  g_uart_top_line = 0;
+
+  /* Clear screen. */
+  tft.fillRect(0, LOG_OFFSET_Y, 320, 240 - LOG_OFFSET_Y, BG_COLOR);
+}
+
+
+/**
+ * @brief Update status bar (in MONITOR mode)
+ */
+ 
+void update_status_bar(void)
+{
+  char parity[] = "NOE";
+  char sz_baudrate[10];
+  char sz_config[4];
+  snprintf(sz_baudrate, 10, "%d", baudrate);
+  snprintf(sz_config, 4, "%d%c1", g_bytesize, parity[good_par]);
+  
+  tft.fillRect(0, 0, 320, LOG_OFFSET_Y-2, TFT_DARKGREEN);
+  tft.setTextSize(2);
+  tft.drawString(sz_baudrate, 5, 2);
+  tft.drawString(sz_config, 90, 2);
+  tft.setTextSize(1);
+}
+
+
+/**
+ * @brief Update measures bar (in WAITING mode)
+ */
+ 
+void update_waiting_measures(void)
+{
+  int prog = (g_nb_measures * 150.0)/MAX_MEASURES;
+  tft.drawRect(85, 120, 150, 10, TFT_NAVY);
+  tft.fillRect(86, 121, prog,8, TFT_NAVY);
+}
+
+
+/**
+ * @brief Update our waiting screen (in WAITING mode)
+ */
+ 
+void wait_screen(void)
+{
+  tft.fillRect(0, 0, 320, 240,BG_COLOR);
+  tft.fillRect(80, 90, 160, 60, TFT_DARKGREY);
+  tft.setTextSize(2);
+  tft.drawString("Syncing ...", 85, 95);
+  tft.setTextSize(1);
+
+  update_waiting_measures();
+}
+
+
+/**********************************************
+ **********************************************
+ *
+ * User button callbacks
+ * 
+ **********************************************
+ **********************************************/
+
+/**
+ * @brief Resync button callback
+ **/
+ 
+void resync_button_pressed(void)
+{
+  /* No effect if we are currently syncing ... */
+  if (g_state == WAITING)
+    return;
+  
+  /* Debounce */
+  delay(10);
+  if (digitalRead(WIO_KEY_C) != 0)
+    return;
+  
   /* Setup our input GPIO. */
   Serial1.end();
   attachInterrupt(digitalPinToInterrupt(PROBE_INPUT), track_state, CHANGE);
   
   /* Restart analysis. */
   g_state = WAITING;
+
+  /* Reset measures. */
+  g_nb_measures = 0;
+
+  /* Reset screen. */
+  wait_screen();
 }
 
+
+/**
+ * @brief Clear screen button callback
+ **/
+
+void clear_button_pressed(void)
+{
+  /* Debounce */
+  delay(10);
+  if (digitalRead(WIO_KEY_A) != 0)
+    return;
+
+  clear_log_screen();
+}
+
+
+/**********************************************
+ **********************************************
+ *
+ * Signal acquisition callback (timer)
+ * 
+ **********************************************
+ **********************************************/
+
+/**
+ * @brief Track state of input probe.
+ * 
+ * Fills g_measures with timestamps.
+ */
+
+void track_state(void)
+{
+  switch(g_state)
+  {
+    case WAITING:
+      {
+        /* Found a falling edge, start acquisition. */
+        if (digitalRead(PROBE_INPUT) == 0)
+        {
+          /* Save measure. */
+          g_nb_measures = 0;
+          g_measures[g_nb_measures++] = g_usec_counter;
+          g_last_timestamp = g_usec_counter;
+          
+          /* Set mode to ACQUIRE. */
+          g_state = ACQUIRE;
+        }
+      }
+      break;
+
+    case ACQUIRE:
+      {
+        /* Save measure if we have enough memory. */
+        if (g_nb_measures < MAX_MEASURES)
+        {
+          /* Save measure. */
+          g_measures[g_nb_measures++] = g_usec_counter;
+          g_last_timestamp = g_usec_counter;
+        }
+        else
+        {
+          Serial.println("> Switching to analysis");
+          /* Switch to analyze mode. */
+          g_state = ANALYZE;
+        }
+      }
+      break;
+  }
+}
+ 
+
+/**********************************************
+ **********************************************
+ *
+ * Main code
+ * 
+ **********************************************
+ **********************************************/
+
+/**
+ * @brief Setup routine (initializes the WioTerminal)
+ */
+ 
 void setup() {
   /* Setup WioTerminal Serial. */
   Serial.begin(115200);
@@ -98,20 +338,18 @@ void setup() {
   /* Setup screen. */
   tft.begin();
   tft.setRotation(3);
-  tft.fillScreen(TFT_BLACK); //Red background
-  tft.setTextColor(TFT_WHITE);          //sets the text colour to black
+  tft.fillScreen(BG_COLOR); //Red background
+  tft.setTextColor(TEXT_COLOR);          //sets the text colour to black
   tft.setTextSize(1);                   //sets the size of text
-  //tft.drawString("WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW", 0, 0);
-  //tft.drawString("WWWWWWWWWWWWWWWWWWWWWWWWW", 0, 10);
 
-  memset(g_uart_log, 0, (SCREEN_WIDTH+1)*SCREEN_HEIGHT);
-  g_uart_cur_line = 0;
-  g_uart_cur_col = 0;
-  g_uart_top_line = 0;
+  /* Clear screen. */
+  clear_log_screen();
 
   /* Setup our buttons. */
+  pinMode(WIO_KEY_A, INPUT_PULLUP);
   pinMode(WIO_KEY_C, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(WIO_KEY_C), resync, FALLING);
+  attachInterrupt(digitalPinToInterrupt(WIO_KEY_A), clear_button_pressed, FALLING);
+  attachInterrupt(digitalPinToInterrupt(WIO_KEY_C), resync_button_pressed, FALLING);
  
   /* Setup our input GPIO. */
   Serial1.end(); // Disable hardware UART
@@ -127,20 +365,23 @@ void setup() {
 
   /* Start timer (call u_sec_counter each microsecond. */
   ITimer0.attachInterruptInterval(1, u_sec_counter);
+
+  /* Display wait screen. */
+  wait_screen();
 }
 
-int count_printable_chars(char *p_data, int data_size)
-{
-  int count=0;
-  for (int i=0; i<data_size; i++)
-  {
-    if (isPrintable(p_data[i]))
-      count++;
-  }
 
-  return count;
-}
-
+/**
+ * @brief Try to decode a captured signal based on possible UART parameters.
+ * @param period: period used to reconstruct the UART frame (number of samples per bit)
+ * @param nbits: number of bits to code 1 'byte'
+ * @param bit_duration: duration of 1 bit in microsecond (used to compute baudrate)
+ * @param parity: parity (none, odd, even)
+ * @param p_data: pointer to an output buffer
+ * @param p_data_size: pointer to the size of the output buffer
+ * @return number of encountered errors.
+ */
+ 
 int try_decode(int period, int nbits, int bit_duration, int parity, char *p_data, int *p_data_size)
 {
   int i,j,bitpos,m,ones,errors;
@@ -296,19 +537,29 @@ int try_decode(int period, int nbits, int bit_duration, int parity, char *p_data
   return errors;
 }
 
+/**
+ * Main loop.
+ */
 
 void loop() {
-  int baudrate = 0, uart_config;
-  uint32_t min_inter, delta, i, total, nbits;
+  uint32_t min_inter, delta, i, total, nbits, bytesize;
   char rx_data[10];
   int bufsize;
-  int bytesize, parity, printable, good_par, found;
+  int parity, printable, found;
   int nbytes;
   char rx_buf[SCREEN_WIDTH];
   char rx_byte;
 
   switch(g_state)
   {
+    case WAITING:
+    case ACQUIRE:
+    {
+      /* Update nb measures. */
+      update_waiting_measures();
+    }
+    break;
+    
     case ANALYZE:
     {
       /* Determine bit duration. */
@@ -318,8 +569,6 @@ void loop() {
       for (i=0; i<(g_nb_measures-1); i++)
       {
         delta = g_measures[i+1] - g_measures[i];
-        //Serial.print("delta: ");
-        //Serial.println(delta);
         if (delta < min_inter)
           min_inter = delta;
       }
@@ -355,6 +604,8 @@ void loop() {
         /* Display parameters if found. */
         if (found)
         {
+          g_bytesize = bytesize;
+          
           Serial.print("Bit duration (us): ");
           Serial.println(min_inter);
           Serial.print("Byte size: ");
@@ -389,8 +640,19 @@ void loop() {
       if ((found) && (baudrate > 0))
       {
         Serial.println("======< MONITOR >=============");
+        
         /* Switch to display mode. */
         g_state = MONITOR;
+
+        g_nb_measures = MAX_MEASURES;
+        update_waiting_measures();
+
+        /* Clear screen. */
+        tft.fillRect(0, 0, 320, 240,BG_COLOR);
+
+        /* Update status bar: display baudrate and config. */
+        update_status_bar();
+        clear_log_screen();
 
         /* Re-enable hardware UART. */
         detachInterrupt(digitalPinToInterrupt(PROBE_INPUT));
@@ -424,27 +686,15 @@ void loop() {
           if (rx_buf[i] == '\n')
           {
             /* Update display. */
-            tft.fillRect(0, g_uart_cur_line*LINE_HEIGHT, 320, LINE_HEIGHT, TFT_BLACK);
-            tft.drawString(g_uart_log[g_uart_cur_line], 0, g_uart_cur_line*LINE_HEIGHT);
+            tft.fillRect(0, g_uart_cur_line*LINE_HEIGHT + LOG_OFFSET_Y, 320, LINE_HEIGHT, BG_COLOR);
+            tft.drawString(g_uart_log[g_uart_cur_line], 0, g_uart_cur_line*LINE_HEIGHT + LOG_OFFSET_Y);
             
             g_uart_cur_line = (g_uart_cur_line + 1) % SCREEN_HEIGHT;
-            /*
-            g_uart_cur_line++;
-            if (g_uart_cur_line >= SCREEN_HEIGHT)
-            {
-              g_uart_cur_line = 0;
-            }*/
 
             if (g_uart_cur_line == g_uart_top_line)
             {
               g_uart_top_line = (g_uart_top_line + 1) % SCREEN_HEIGHT;
               memset(&g_uart_log[g_uart_cur_line], 0, SCREEN_WIDTH+1);
-              /*
-              g_uart_top_line++;
-              if (g_uart_top_line >= SCREEN_HEIGHT)
-              {
-                g_uart_top_line = 0;
-              }*/
             }
           }
           else if (rx_buf[i] == '\r')
@@ -461,63 +711,13 @@ void loop() {
         }
 
         /* Update display. */
-        tft.fillRect(0, g_uart_cur_line*LINE_HEIGHT, 320, LINE_HEIGHT, TFT_RED);
-        tft.drawString(g_uart_log[g_uart_cur_line], 0, g_uart_cur_line*LINE_HEIGHT);
-        
-        /*
-        for (i=0; i<SCREEN_HEIGHT; i++)
-        {
-          if (i == g_uart_cur_line)
-            tft.fillRect(0, i*LINE_HEIGHT, 320, LINE_HEIGHT, TFT_BLACK);
-          //tft.drawString(g_uart_log[(i+g_uart_top_line)%SCREEN_HEIGHT], 0, i*LINE_HEIGHT); 
-          tft.drawString(g_uart_log[i%SCREEN_HEIGHT], 0, i*LINE_HEIGHT); 
-        }*/
-        
+        tft.fillRect(0, g_uart_cur_line*LINE_HEIGHT + LOG_OFFSET_Y, 320, LINE_HEIGHT, TFT_RED);
+        tft.drawString(g_uart_log[g_uart_cur_line], 0, g_uart_cur_line*LINE_HEIGHT + LOG_OFFSET_Y);
       }
     }
     break;
 
     default:
-      break;
-  }
-}
-
-void track_state(void)
-{
-  switch(g_state)
-  {
-    case WAITING:
-      {
-        /* Found a falling edge, start acquisition. */
-        if (digitalRead(PROBE_INPUT) == 0)
-        {
-          /* Save measure. */
-          g_nb_measures = 0;
-          g_measures[g_nb_measures++] = g_usec_counter;
-          g_last_timestamp = g_usec_counter;
-          
-          /* Set mode to ACQUIRE. */
-          g_state = ACQUIRE;
-        }
-      }
-      break;
-
-    case ACQUIRE:
-      {
-        /* Save measure if we have enough memory. */
-        if (g_nb_measures < MAX_MEASURES)
-        {
-          /* Save measure. */
-          g_measures[g_nb_measures++] = g_usec_counter;
-          g_last_timestamp = g_usec_counter;
-        }
-        else
-        {
-          Serial.println("> Switching to analysis");
-          /* Switch to analyze mode. */
-          g_state = ANALYZE;
-        }
-      }
       break;
   }
 }
