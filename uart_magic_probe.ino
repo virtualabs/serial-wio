@@ -1,6 +1,8 @@
 #include "SAMDTimerInterrupt.h"
 #include"TFT_eSPI.h"
 
+#define BUZZER_PIN WIO_BUZZER /* sig pin of the buzzer */
+
 #define MAX_MEASURES    5000
 #define IDLE_INTERVAL   100000
 #define PROBE_INPUT     PIN_SERIAL1_RX
@@ -135,6 +137,21 @@ void u_sec_counter(void)
   {
     g_state = ANALYZE;
   }
+}
+
+/**
+ * @brief Play tone.
+ * @param tone: tone to play (Hz)
+ * @param duration: tone duration (milliseconds)
+ **/
+
+void playTone(int tone, int duration) {
+    for (long i = 0; i < duration * 1000L; i += tone * 2) {
+        digitalWrite(BUZZER_PIN, HIGH);
+        delayMicroseconds(tone);
+        digitalWrite(BUZZER_PIN, LOW);
+        delayMicroseconds(tone);
+    }
 }
 
 
@@ -355,6 +372,9 @@ void setup() {
   Serial1.end(); // Disable hardware UART
   pinMode(PROBE_INPUT, INPUT);
   attachInterrupt(digitalPinToInterrupt(PROBE_INPUT), track_state, CHANGE);
+
+  /* Setup our buzzer. */
+  pinMode(WIO_BUZZER, OUTPUT);
 
   /* Set default state. */
   mp_state_t g_state = WAITING;
@@ -646,6 +666,9 @@ void loop() {
 
         g_nb_measures = MAX_MEASURES;
         update_waiting_measures();
+
+        /* Beeeeep. */
+        playTone(1915, 100);
 
         /* Clear screen. */
         tft.fillRect(0, 0, 320, 240,BG_COLOR);
