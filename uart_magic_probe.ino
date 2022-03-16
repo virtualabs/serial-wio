@@ -207,8 +207,8 @@ void update_status_bar(void)
 void update_waiting_measures(void)
 {
   int prog = (g_nb_measures * 150.0)/MAX_MEASURES;
-  tft.drawRect(85, 120, 150, 10, TFT_NAVY);
-  tft.fillRect(86, 121, prog,8, TFT_NAVY);
+  tft.drawRect(85, 125, 150, 10, TFT_NAVY);
+  tft.fillRect(86, 126, prog,8, TFT_NAVY);
 }
 
 
@@ -272,12 +272,15 @@ void resync_button_pressed(void)
 
 void clear_button_pressed(void)
 {
-  /* Debounce */
-  delay(10);
-  if (digitalRead(WIO_KEY_A) != 0)
-    return;
+  if (g_state == MONITOR)
+  {
+    /* Debounce */
+    delay(10);
+    if (digitalRead(WIO_KEY_A) != 0)
+      return;
 
-  clear_log_screen();
+    clear_log_screen();
+  }
 }
 
 
