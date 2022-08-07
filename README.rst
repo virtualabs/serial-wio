@@ -96,7 +96,7 @@ guide in order to setup your Arduino development environment.
 This project has been designed with Arduino and requires some libraries to successfully compile:
 
 * `TFT_eSPI` to drive the LCD screen of the WioTerminal
-* ̀`SAMD_TimerInterrupt` to handle SAMD21 timers
+* `SAMD_TimerInterrupt` to handle SAMD21 timers
 
 Make sure to add them before trying to compile the import the Arduino sketch and build it (use Arduino's
 library manager).
