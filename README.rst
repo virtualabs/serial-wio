@@ -39,23 +39,23 @@ Assembling the case
 
 First, insert 2 10mm M3 screws in the bottom part as shown below:
 
-.. image:: img/assemblage-step1.png
+.. image:: images/assemblage-step1.png
   :alt: Assembling bottom part
 
 Then, place the custom PCB inside the bottom part, as shown below:
 
-.. image:: img/assemblage-step2.png
+.. image:: images/assemblage-step2.png
   :alt: Insert Serial-Wio assembled PCB
 
 Place on top of this the intermediate lid and add two M3 nuts. Tighten them just enough to hold the lid
 in place. 
 
-.. image:: img/assemblage-step3.png
+.. image:: images/assemblage-step3.png
   :alt: Place and secure intermediate lid in place
 
 Last, place the top lid and screw 4x 15mm M3 screws to maintain it in place, as shown below:
 
-.. image:: img/assemblage-step4.png
+.. image:: images/assemblage-step4.png
   :alt: Fix the top lid
 
 Custom PCB
