@@ -37,12 +37,12 @@ printed with supports to get the screws' heads holes correctly printed.
 Assembling the case
 ~~~~~~~~~~~~~~~~~~~
 
-First, insert 2 10mm M3 screws in the bottom part as shown below:
+First, insert 2x 10mm M3 screws in the bottom part as shown below:
 
 .. image:: images/assemblage-step1.png
   :alt: Assembling bottom part
 
-Then, place the custom PCB inside the bottom part, as shown below:
+Then, place the custom PCB inside the bottom part:
 
 .. image:: images/assemblage-step2.png
   :alt: Insert Serial-Wio assembled PCB
@@ -58,6 +58,12 @@ Last, place the top lid and screw 4x 15mm M3 screws to maintain it in place, as 
 .. image:: images/assemblage-step4.png
   :alt: Fix the top lid
 
+You can now connect your WioTerminal to your SerialWio module:
+
+.. image:: images/assemblage-final.png
+  :alt: Place and secure intermediate lid in place
+
+
 Custom PCB
 ----------
 
@@ -65,7 +71,20 @@ We designed a custom PCB that extends WioTerminal capabilities designed with KiC
 Design files are available in `PCB_design_files` folder, including 3D models and custom
 fingerprints.
 
+Gerber files
+~~~~~~~~~~~~
+
 Gerber files are also provided in the `PCB_design_files/gerber` directory, as well as the
 `kicad_pcb` file if you want to order it on OSHPark. 
+
+Bill of materials
+~~~~~~~~~~~~~~~~~
+
+* Q1, Q2, Q3: SOT23 MMBF170 N-channel MOSFET 60V 225mW (Ref LCSC: C130879)
+* R1, R2, R3: R0805 10 Kohm (Ref LCSC: C269742)
+* TEST_SIG1: 4mm banana female plug red (Farnell: SWEB 8094 AU/RT)
+* TEST_GND1: 4mm banana female plug black (Farnell: SWEB 8094 AU/SW)
+* 3 contacts (1 row) 2.54mm right-angled header
+
 
 
