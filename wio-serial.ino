@@ -261,6 +261,10 @@ void resync_button_pressed(void)
   /* Reset measures. */
   g_nb_measures = 0;
 
+  /* Reset counter. */
+  g_usec_counter = 0;
+  g_last_timestamp = 0;
+
   /* Reset screen. */
   wait_screen();
 }
