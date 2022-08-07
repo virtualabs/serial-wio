@@ -87,4 +87,18 @@ Bill of materials
 * 3 contacts (1 row) 2.54mm right-angled header
 
 
+Software dependencies
+---------------------
+
+First, you need to follow the `Get Started with Wio Terminal <https://wiki.seeedstudio.com/Wio-Terminal-Getting-Started/>`_
+guide in order to setup your Arduino development environment.
+
+This project has been designed with Arduino and requires some libraries to successfully compile:
+
+* `TFT_eSPI` to drive the LCD screen of the WioTerminal
+* ̀`SAMD_TimerInterrupt` to handle SAMD21 timers
+
+Make sure to add them before trying to compile the import the Arduino sketch and build it (use Arduino's
+library manager).
+
 
